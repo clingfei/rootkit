@@ -18,7 +18,7 @@ struct module {
 
 通过THIS_MODULE宏获得当前的module信息
 
-一种隐藏module的方式：将当前module从链表中删除，需要恢复时再重新插入链表。
+隐藏module的方式：将当前module从链表中删除，需要恢复时再重新插入链表。
 
 ## hide directories
 
@@ -26,15 +26,23 @@ struct module {
 struct linux_dirent64 {
     u64         d_ino;
     s64         d_off;
-    unsigned short      d_reclen;
+    unsigned short      d_reclen;			//目录项长度，单位为字节
     unsigned char       d_type;
-    char        d_name[];
+    char        d_name[];					//文件名
 };
 ```
 
-d_reclen record length，struct的长度，单位为字节，可以用于跳过某一条struct来查找想要的struct记录。
+```c
+static asmlinkage long (*getdents64)(unsigned long fd, struct linux_dirent64 __user *dirent, unsigned long count);
+```
 
-d_name：文件名
+getdents64的返回值为目录项的总长度，dirent是linux_dirent64结构体的集合，其中每个结构体代表一个目录项的抽象，可以通过current_dir + current_dir->d_reclen来获得下一个目录项。对每个目录项判断其d_name是否与要隐藏的相同，若相同则跳过，并在总长度中减去对应的d_reclen。
 
+getdent与getdents64类似。
 
+## Reference
+
+1. Linux syscall.h: [linux/syscalls.h at b07175dc41babfec057f494d22a750af755297d8 · torvalds/linux (github.com)](https://github.com/torvalds/linux/blob/b07175dc41babfec057f494d22a750af755297d8/include/linux/syscalls.h#L468)
+2. Linux syscall Reference: [Linux Syscall Reference (paolostivanin.com)](https://syscalls64.paolostivanin.com/)
+3. pt_regs: [linux/ptrace.h at 15bc20c6af4ceee97a1f90b43c0e386643c071b4 · torvalds/linux (github.com)](https://github.com/torvalds/linux/blob/15bc20c6af4ceee97a1f90b43c0e386643c071b4/arch/x86/include/asm/ptrace.h#L12)
 
