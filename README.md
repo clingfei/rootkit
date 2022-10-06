@@ -40,6 +40,44 @@ getdents64的返回值为目录项的总长度，dirent是linux_dirent64结构�
 
 getdent与getdents64类似。
 
+## hide process
+
+与文件隐藏类似，区别在于进程号是动态分配的，因此不能采用硬编码的形式隐藏。我们hook kill系统调用，利用Kill的pid参数传递给模块作为要隐藏的进程的进程号。然后hook getdents64和getdents两个系统调用，将每个目录项的d_name与pid相比较，若相同则隐藏。
+
+## hide ports
+
+```C
+struct sock {
+	struct sock_common __sk_common
+#define sk_node			__sk_common.skc_node
+//...
+}
+```
+
+```C
+struct sock_common {
+	/* redacted for clarity */
+	
+	/* skc_dport && skc_num must be grouped as well */
+	union {
+		__portpair skc_portpair;
+		struct {
+			__be16			skc_dport;
+			__u16			skc_num;
+		};
+	};
+	/* redacted for clarity */
+};
+```
+
+在sock的定义中，有
+
+```C
+#define sk_num			__sk_common.skc_num
+```
+
+而__sk_common.skc_num与skc_dport组成的结构体定义在union中，因此可以通过指向sock的指针的sk_num字段来获得正在监听的本地端口。
+
 ## Reference
 
 1. Linux syscall.h: [linux/syscalls.h at b07175dc41babfec057f494d22a750af755297d8 · torvalds/linux (github.com)](https://github.com/torvalds/linux/blob/b07175dc41babfec057f494d22a750af755297d8/include/linux/syscalls.h#L468)
