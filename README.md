@@ -78,6 +78,16 @@ struct sock_common {
 
 而__sk_common.skc_num与skc_dport组成的结构体定义在union中，因此可以通过指向sock的指针的sk_num字段来获得正在监听的本地端口。
 
+检测方式：
+
+```
+sudo netstat -tunelp   #查看不同的端口 协议 进程
+
+nc -lvnp port   #判断port是否被占用
+```
+
+
+
 ## Reference
 
 1. Linux syscall.h: [linux/syscalls.h at b07175dc41babfec057f494d22a750af755297d8 · torvalds/linux (github.com)](https://github.com/torvalds/linux/blob/b07175dc41babfec057f494d22a750af755297d8/include/linux/syscalls.h#L468)
