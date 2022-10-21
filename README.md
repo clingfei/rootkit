@@ -1,7 +1,5 @@
 # Rootkit
 
-## 应该使用bash而不是zsh
-
 ## hide module
 
 内核中的模块信息定义在linux/module.h中，
